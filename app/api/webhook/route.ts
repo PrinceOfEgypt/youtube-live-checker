@@ -5,7 +5,7 @@ import { broadcast } from '@/lib/live-broadcast';
 import { getChannelMetadata } from '@/lib/youtube';
 import axios from 'axios';
 
-const CHANNEL_ID = process.env.CHANNEL_ID!;
+const CHANNEL_ID = 'UCw3BCSojo1NKBw0xvfKa4ZQ'
 
 export const GET = async (req: NextRequest) => {
   const mode = req.nextUrl.searchParams.get('hub.mode');

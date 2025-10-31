@@ -9,7 +9,7 @@ const nextConfig = {
     ],
   },
   env: {
-    NEXT_PUBLIC_CHANNEL_ID: process.env.CHANNEL_ID,
+    NEXT_PUBLIC_CHANNEL_ID: 'UCw3BCSojo1NKBw0xvfKa4ZQ',
   },
   eslint: {
     // Optional: skip lint during build (only if you lint separately)

@@ -125,11 +125,6 @@ export default function LiveStatus() {
           <OfflineContent channelName={channelName} />
         )}
       </div>
-
-      {/* Footer */}
-      <div className="px-6 pb-4 text-center">
-        <p className="text-xs text-green-600">Live updates via webhook</p>
-      </div>
     </WidgetContainer>
   );
 }
