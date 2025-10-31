@@ -1,0 +1,49 @@
+# Node / NPM
+node_modules/
+npm-debug.log
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Wrangler / Cloudflare
+.wrangler/
+dist/
+*.log
+*.tsbuildinfo
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+
+# TypeScript
+*.tsbuildinfo
+*.d.ts
+
+# Build / Output
+/build
+/out
+/public/build
+
+# IDE / Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets & Credentials (NEVER commit!)
+secrets/
+*.pem
+*.key
+*.crt
+
+# Optional: Local testing
+test/
+__tests__/
+*.test.ts
