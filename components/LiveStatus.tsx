@@ -26,7 +26,7 @@ export default function LiveStatus() {
 
   useEffect(() => {
     fetchStatus();
-    const interval = setInterval(fetchStatus, 30_000);
+    const interval = setInterval(fetchStatus, 300_000);
     return () => clearInterval(interval);
   }, []);
 
@@ -71,9 +71,6 @@ export default function LiveStatus() {
             {channelName.charAt(0).toUpperCase()}
           </div>
         )}
-        <h2 className="text-xl font-bold text-gray-800 truncate">
-          {channelName}
-        </h2>
       </a>
 
       {/* Live / Offline Content */}
@@ -144,10 +141,6 @@ function LiveView({ status }: { status: LiveStatus }) {
 function OfflineView({ channelName }: { channelName: string }) {
   return (
     <div className="text-center py-8">
-      <div className="flex items-center justify-center gap-2 text-gray-600 mb-2">
-        <div className="w-3 h-3 bg-gray-400 rounded-full"></div>
-        <span className="font-semibold">Not Live</span>
-      </div>
       <p className="text-sm text-gray-500">
         {channelName} is currently offline.
       </p>
