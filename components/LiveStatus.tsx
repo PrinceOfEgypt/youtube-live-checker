@@ -89,7 +89,7 @@ export default function LiveStatus() {
   }
 
   const { isLive, channelName, channelLogo, videoId } = status;
-  const channelUrl = `https://youtube.com/channel/${process.env.NEXT_PUBLIC_CHANNEL_ID}`;
+  const channelUrl = `https://youtube.com/channel/UCw3BCSojo1NKBw0xvfKa4ZQ`;
 
   return (
     <WidgetContainer>
