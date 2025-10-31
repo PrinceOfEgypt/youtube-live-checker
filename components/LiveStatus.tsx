@@ -26,7 +26,7 @@ export default function LiveStatus() {
 
   useEffect(() => {
     fetchStatus();
-    const interval = setInterval(fetchStatus, 300000);
+    const interval = setInterval(fetchStatus, 900000);
     return () => clearInterval(interval);
   }, []);
 
