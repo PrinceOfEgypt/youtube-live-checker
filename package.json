@@ -1,51 +1,25 @@
 {
   "name": "youtube-live-checker",
-  "version": "0.1.0",
-  "private": true,
-  "cloudflare": {
-    "label": "Next.js Framework Starter",
-    "products": [
-      "Workers"
-    ],
-    "categories": [],
-    "preview_icon_url": "https://imagedelivery.net/wSMYJvS3Xw-n339CbDyDIA/05eee9e0-2c04-48fd-11bf-84e65f839000/public",
-    "preview_image_url": "https://imagedelivery.net/wSMYJvS3Xw-n339CbDyDIA/4e913a56-fd99-4372-0586-9f1364173100/preview",
-    "publish": true
-  },
+  "version": "1.0.0",
+  "description": "Real-time YouTube live status widget using Cloudflare Workers + Webhook + KV",
+  "main": "src/index.ts",
+  "type": "module",
   "scripts": {
-    "build": "next build",
-    "cf-typegen": "wrangler types --env-interface CloudflareEnv env.d.ts",
-    "check": "npm run build && tsc",
-    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
-    "dev": "next dev",
-    "lint": "next lint",
-    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
-    "start": "next start"
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "worker:dev": "wrangler dev",
+    "worker:deploy": "wrangler deploy"
   },
   "dependencies": {
-    "@opennextjs/cloudflare": "^1.11.0",
-    "axios": "^1.7.0",
-    "next": "^15.5.6",
-    "react": "^18.3.0",
-    "react-dom": "^18.3.0",
-    "xml2js": "^0.6.2"
+    "axios": "^1.7.7",
+    "fast-xml-parser": "^4.4.1"
   },
   "devDependencies": {
-    "@eslint/js": "^9.38.0",
-    "@next/eslint-plugin-next": "^16.0.1",
-    "@types/node": "^20.19.24",
-    "@types/react": "^18",
-    "@types/react-dom": "^18",
-    "@types/xml2js": "^0.4.14",
-    "autoprefixer": "^10.4.21",
-    "eslint": "^8.57.1",
-    "eslint-config-next": "15.0.0",
-    "eslint-plugin-react": "^7.37.5",
-    "postcss": "^8.5.6",
-    "tailwindcss": "^3.4.18",
-    "ts-node": "^10.9.2",
-    "typescript": "^5",
-    "typescript-eslint": "^8.46.2",
+    "@cloudflare/workers-types": "^4.20241022.0",
+    "typescript": "^5.6.2",
     "wrangler": "^4.45.3"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

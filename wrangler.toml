@@ -1,0 +1,32 @@
+# wrangler.toml
+name = "youtube-live-checker"
+main = "src/index.ts"
+compatibility_date = "2025-10-31"
+
+# Required for Node.js APIs (xml2js, timers, etc.)
+compatibility_flags = ["nodejs_compat"]
+
+# === Environment Variables ===
+[vars]
+CHANNEL_ID = "UCw3BCSojo1NKBw0xvfKa4ZQ"
+
+# === KV Namespace ===
+[[kv_namespaces]]
+binding = "LIVE_STATUS"
+id = "ca428cb65eb14aed88bc91627e4e001d"
+
+# === Development Mode (Full Debug Logs) ===
+[dev]
+port = 8787
+vars = { DEBUG = "true" }
+
+# === Production Mode (Minimal Logs) ===
+[production.vars]
+DEBUG = "false"
+
+[observability]
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
