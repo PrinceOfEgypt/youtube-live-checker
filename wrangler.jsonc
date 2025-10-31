@@ -12,11 +12,6 @@
     "binding": "ASSETS",
     "directory": ".open-next/assets"
   },
-  "vars": {
-    "YOUTUBE_API_KEY": "AIzaSyBS_N6-1tP0a2aLXAWVHY7EpWJhssCP1og",
-    "CHANNEL_ID": "UCw3BCSojo1NKBw0xvfKa4ZQ",
-    "NEXT_PUBLIC_BASE_URL": "https://youtube-live-checker.michael-abdelmalek.workers.dev/"
-  },
   "observability": {
     "enabled": true
   },
