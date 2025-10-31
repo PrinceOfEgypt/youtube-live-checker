@@ -3,56 +3,62 @@
 
 import { useEffect, useState } from 'react';
 import Image from 'next/image';
-import type { LiveStatus } from '@/lib/youtube';
+
+interface LiveStatus {
+  isLive: boolean;
+  title?: string;
+  videoId?: string;
+  thumbnail?: string;
+  startedAt?: string;
+  viewerCount?: number;
+  channelName?: string;
+  channelLogo?: string;
+}
 
 export default function LiveStatus() {
   const [status, setStatus] = useState<LiveStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
-
-  const fetchStatus = async () => {
-    try {
-      setLoading(true);
-      setError(false);
-      const res = await fetch('/api/check-live');
-      const data: LiveStatus = await res.json();
-      setStatus(data);
-    } catch {
-      setError(true);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   useEffect(() => {
-    fetchStatus();
-    const interval = setInterval(fetchStatus, 900000);
-    return () => clearInterval(interval);
+    const eventSource = new EventSource('/api/live-sse');
+
+    eventSource.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      setStatus(data);
+      setLoading(false);
+    };
+
+    eventSource.onerror = () => {
+      console.error('SSE error');
+      eventSource.close();
+      setLoading(false);
+    };
+
+    return () => eventSource.close();
   }, []);
 
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[400px] text-gray-500">
-        Checking live status...
+        Connecting to live updates...
       </div>
     );
   }
 
-  if (error) {
+  if (!status) {
     return (
       <div className="flex items-center justify-center min-h-[400px] text-red-500">
-        Failed to load live status.
+        No data
       </div>
     );
   }
 
-  const { isLive, channelName = 'Unknown Channel', channelLogo, videoId } = status!;
+  const { isLive, channelName = 'Unknown', channelLogo, videoId } = status;
   const channelUrl = `https://youtube.com/channel/${process.env.NEXT_PUBLIC_CHANNEL_ID}`;
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 bg-gradient-to-br from-gray-50 to-gray-100">
       <div className="w-full max-w-md bg-white rounded-xl shadow-xl overflow-hidden">
-        {/* Channel Header – Centered */}
         <a
           href={channelUrl}
           target="_blank"
@@ -69,88 +75,67 @@ export default function LiveStatus() {
             />
           ) : (
             <div className="w-18 h-18 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-2xl shadow-lg">
-              {channelName.charAt(0).toUpperCase()}
+              {channelName.charAt(0)}
             </div>
           )}
           <h2 className="text-xl font-bold text-gray-800">{channelName}</h2>
         </a>
 
-        {/* Live / Offline Content – Centered */}
         <div className="p-6 text-center">
           {isLive ? (
-            <LiveView status={status!} />
+            <div>
+              <div className="flex items-center justify-center gap-2 text-red-600 mb-4">
+                <div className="w-3 h-3 bg-red-600 rounded-full animate-pulse"></div>
+                <span className="font-bold text-lg">LIVE NOW</span>
+              </div>
+
+              {status.thumbnail && (
+                <a href={`https://youtube.com/watch?v=${videoId}`} target="_blank" className="block mb-5">
+                  <Image
+                    src={status.thumbnail}
+                    alt={status.title ?? 'Live'}
+                    width={480}
+                    height={270}
+                    className="rounded-lg w-full object-cover shadow-md hover:opacity-90 transition"
+                  />
+                </a>
+              )}
+
+              <h3 className="font-semibold text-lg mb-2 line-clamp-2">
+                {status.title ?? 'Untitled'}
+              </h3>
+
+              {status.viewerCount !== undefined && (
+                <p className="text-sm text-gray-600 mb-1">
+                  {status.viewerCount.toLocaleString()} watching
+                </p>
+              )}
+
+              <a
+                href={`https://youtube.com/watch?v=${videoId}`}
+                target="_blank"
+                className="inline-block w-full max-w-xs px-6 py-3 bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition"
+              >
+                Watch Live
+              </a>
+            </div>
           ) : (
-            <OfflineView channelName={channelName} />
+            <div className="py-10">
+              <div className="flex items-center justify-center gap-2 text-gray-600 mb-2">
+                <div className="w-3 h-3 bg-gray-400 rounded-full"></div>
+                <span className="font-semibold">Not Live</span>
+              </div>
+              <p className="text-sm text-gray-500">
+                {channelName} is currently offline.
+              </p>
+            </div>
           )}
         </div>
+
+        <div className="px-6 pb-4 text-center text-xs text-green-600">
+          Live updates via webhook
+        </div>
       </div>
-    </div>
-  );
-}
-
-function LiveView({ status }: { status: LiveStatus }) {
-  return (
-    <>
-      <div className="flex items-center justify-center gap-2 text-red-600 mb-4">
-        <div className="w-3 h-3 bg-red-600 rounded-full animate-pulse"></div>
-        <span className="font-bold text-lg">LIVE NOW</span>
-      </div>
-
-      {status.thumbnail && (
-        <a
-          href={`https://youtube.com/watch?v=${status.videoId}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="block mb-5"
-        >
-          <Image
-            src={status.thumbnail}
-            alt={status.title ?? 'Live stream'}
-            width={480}
-            height={270}
-            className="rounded-lg w-full object-cover shadow-md hover:opacity-90 transition"
-          />
-        </a>
-      )}
-
-      <h3 className="font-semibold text-lg mb-2 line-clamp-2">
-        {status.title ?? 'Untitled Stream'}
-      </h3>
-
-      {status.viewerCount !== undefined && (
-        <p className="text-sm text-gray-600 mb-1">
-          {status.viewerCount.toLocaleString()} watching
-        </p>
-      )}
-
-      {status.startedAt && (
-        <p className="text-xs text-gray-500 mb-5">
-          Started at {new Date(status.startedAt).toLocaleTimeString()}
-        </p>
-      )}
-
-      <a
-        href={`https://youtube.com/watch?v=${status.videoId}`}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="inline-block w-full max-w-xs px-6 py-3 bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition"
-      >
-        Watch Live
-      </a>
-    </>
-  );
-}
-
-function OfflineView({ channelName }: { channelName: string }) {
-  return (
-    <div className="py-10">
-      <div className="flex items-center justify-center gap-2 text-gray-600 mb-2">
-        <div className="w-3 h-3 bg-gray-400 rounded-full"></div>
-        <span className="font-semibold">Not Live</span>
-      </div>
-      <p className="text-sm text-gray-500">
-        {channelName} is currently offline.
-      </p>
     </div>
   );
 }
