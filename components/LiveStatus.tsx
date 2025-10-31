@@ -4,137 +4,207 @@
 import { useEffect, useState } from 'react';
 import Image from 'next/image';
 
-interface LiveStatus {
+interface LiveStatusData {
   isLive: boolean;
   title?: string;
   videoId?: string;
   thumbnail?: string;
   startedAt?: string;
   viewerCount?: number;
-  channelName?: string;
-  channelLogo?: string;
+  channelName: string;
+  channelLogo: string;
 }
 
 export default function LiveStatus() {
-  const [status, setStatus] = useState<LiveStatus | null>(null);
+  const [status, setStatus] = useState<LiveStatusData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
 
   useEffect(() => {
     const eventSource = new EventSource('/api/live-sse');
 
-    eventSource.onmessage = (e) => {
-      const data = JSON.parse(e.data);
-      setStatus(data);
-      setLoading(false);
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+
+        // Handle special messages
+        if (data.loading) {
+          setLoading(true);
+          setError(false);
+          return;
+        }
+        if (data.error) {
+          setError(true);
+          setLoading(false);
+          return;
+        }
+
+        // Normal status update
+        setStatus(data);
+        setLoading(false);
+        setError(false);
+      } catch (err) {
+        console.error('SSE parse error:', err);
+      }
     };
 
     eventSource.onerror = () => {
-      console.error('SSE error');
+      console.error('SSE connection failed');
       eventSource.close();
+      setError(true);
       setLoading(false);
     };
 
-    return () => eventSource.close();
+    return () => {
+      eventSource.close();
+    };
   }, []);
 
+  // === Render States ===
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[400px] text-gray-500">
-        Connecting to live updates...
-      </div>
+      <WidgetContainer>
+        <div className="text-center py-12">
+          <div className="inline-block w-8 h-8 border-4 border-gray-300 border-t-blue-600 rounded-full animate-spin"></div>
+          <p className="mt-4 text-gray-600">Checking live status...</p>
+        </div>
+      </WidgetContainer>
     );
   }
 
-  if (!status) {
+  if (error || !status) {
     return (
-      <div className="flex items-center justify-center min-h-[400px] text-red-500">
-        No data
-      </div>
+      <WidgetContainer>
+        <div className="text-center py-12">
+          <p className="text-red-600">Failed to load live status.</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+          >
+            Retry
+          </button>
+        </div>
+      </WidgetContainer>
     );
   }
 
-  const { isLive, channelName = 'Unknown', channelLogo, videoId } = status;
+  const { isLive, channelName, channelLogo, videoId } = status;
   const channelUrl = `https://youtube.com/channel/${process.env.NEXT_PUBLIC_CHANNEL_ID}`;
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen p-4 bg-gradient-to-br from-gray-50 to-gray-100">
-      <div className="w-full max-w-md bg-white rounded-xl shadow-xl overflow-hidden">
+    <WidgetContainer>
+      {/* Channel Header */}
+      <a
+        href={channelUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex flex-col items-center gap-3 p-6 bg-gradient-to-b from-gray-50 to-gray-100 hover:from-gray-100 hover:to-gray-200 transition rounded-t-xl"
+      >
+        {channelLogo ? (
+          <Image
+            src={channelLogo}
+            alt={channelName}
+            width={72}
+            height={72}
+            className="rounded-full border-4 border-white shadow-lg"
+            unoptimized
+          />
+        ) : (
+          <div className="w-18 h-18 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-2xl shadow-lg">
+            {channelName.charAt(0)}
+          </div>
+        )}
+        <h2 className="text-xl font-bold text-gray-800">{channelName}</h2>
+      </a>
+
+      {/* Live / Offline Content */}
+      <div className="p-6 text-center">
+        {isLive ? (
+          <LiveContent status={status} />
+        ) : (
+          <OfflineContent channelName={channelName} />
+        )}
+      </div>
+
+      {/* Footer */}
+      <div className="px-6 pb-4 text-center">
+        <p className="text-xs text-green-600">Live updates via webhook</p>
+      </div>
+    </WidgetContainer>
+  );
+}
+
+// === Subcomponents ===
+function LiveContent({ status }: { status: LiveStatusData }) {
+  const { title, thumbnail, viewerCount, startedAt, videoId } = status;
+
+  return (
+    <>
+      <div className="flex items-center justify-center gap-2 text-red-600 mb-4">
+        <div className="w-3 h-3 bg-red-600 rounded-full animate-pulse"></div>
+        <span className="font-bold text-lg">LIVE NOW</span>
+      </div>
+
+      {thumbnail && (
         <a
-          href={channelUrl}
+          href={`https://youtube.com/watch?v=${videoId}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="flex flex-col items-center gap-3 p-6 bg-gradient-to-b from-gray-50 to-gray-100 hover:from-gray-100 hover:to-gray-200 transition"
+          className="block mb-5 rounded-lg overflow-hidden shadow-md hover:opacity-90 transition"
         >
-          {channelLogo ? (
-            <Image
-              src={channelLogo}
-              alt={channelName}
-              width={72}
-              height={72}
-              className="rounded-full border-4 border-white shadow-lg"
-            />
-          ) : (
-            <div className="w-18 h-18 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-2xl shadow-lg">
-              {channelName.charAt(0)}
-            </div>
-          )}
-          <h2 className="text-xl font-bold text-gray-800">{channelName}</h2>
+          <Image
+            src={thumbnail}
+            alt={title ?? 'Live stream'}
+            width={480}
+            height={270}
+            className="w-full object-cover"
+            unoptimized
+          />
         </a>
+      )}
 
-        <div className="p-6 text-center">
-          {isLive ? (
-            <div>
-              <div className="flex items-center justify-center gap-2 text-red-600 mb-4">
-                <div className="w-3 h-3 bg-red-600 rounded-full animate-pulse"></div>
-                <span className="font-bold text-lg">LIVE NOW</span>
-              </div>
+      <h3 className="font-semibold text-lg mb-2 line-clamp-2">{title ?? 'Untitled Stream'}</h3>
 
-              {status.thumbnail && (
-                <a href={`https://youtube.com/watch?v=${videoId}`} target="_blank" className="block mb-5">
-                  <Image
-                    src={status.thumbnail}
-                    alt={status.title ?? 'Live'}
-                    width={480}
-                    height={270}
-                    className="rounded-lg w-full object-cover shadow-md hover:opacity-90 transition"
-                  />
-                </a>
-              )}
+      {viewerCount !== undefined && (
+        <p className="text-sm text-gray-600 mb-1">{viewerCount.toLocaleString()} watching</p>
+      )}
 
-              <h3 className="font-semibold text-lg mb-2 line-clamp-2">
-                {status.title ?? 'Untitled'}
-              </h3>
+      {startedAt && (
+        <p className="text-xs text-gray-500 mb-5">
+          Started at {new Date(startedAt).toLocaleTimeString()}
+        </p>
+      )}
 
-              {status.viewerCount !== undefined && (
-                <p className="text-sm text-gray-600 mb-1">
-                  {status.viewerCount.toLocaleString()} watching
-                </p>
-              )}
+      <a
+        href={`https://youtube.com/watch?v=${videoId}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-block w-full max-w-xs px-6 py-3 bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition"
+      >
+        Watch Live
+      </a>
+    </>
+  );
+}
 
-              <a
-                href={`https://youtube.com/watch?v=${videoId}`}
-                target="_blank"
-                className="inline-block w-full max-w-xs px-6 py-3 bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition"
-              >
-                Watch Live
-              </a>
-            </div>
-          ) : (
-            <div className="py-10">
-              <div className="flex items-center justify-center gap-2 text-gray-600 mb-2">
-                <div className="w-3 h-3 bg-gray-400 rounded-full"></div>
-                <span className="font-semibold">Not Live</span>
-              </div>
-              <p className="text-sm text-gray-500">
-                {channelName} is currently offline.
-              </p>
-            </div>
-          )}
-        </div>
+function OfflineContent({ channelName }: { channelName: string }) {
+  return (
+    <div className="py-10">
+      <div className="flex items-center justify-center gap-2 text-gray-600 mb-2">
+        <div className="w-3 h-3 bg-gray-400 rounded-full"></div>
+        <span className="font-semibold">Not Live</span>
+      </div>
+      <p className="text-sm text-gray-500">{channelName} is currently offline.</p>
+    </div>
+  );
+}
 
-        <div className="px-6 pb-4 text-center text-xs text-green-600">
-          Live updates via webhook
-        </div>
+// === Reusable Container ===
+function WidgetContainer({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col items-center justify-center min-h-screen p-4 bg-gradient-to-br from-gray-50 to-gray-100">
+      <div className="w-full max-w-md bg-white rounded-xl shadow-xl overflow-hidden font-sans">
+        {children}
       </div>
     </div>
   );

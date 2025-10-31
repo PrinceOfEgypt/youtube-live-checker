@@ -1,31 +1,51 @@
 // app/api/live-sse/route.ts
 import { NextResponse } from 'next/server';
-import { getCurrentStatus } from '@/lib/live-broadcast';
+import { getCurrentStatus, pollInitialStatus } from '@/lib/live-broadcast';
 
 export async function GET() {
+  let controller!: ReadableStreamDefaultController;
+
   const stream = new ReadableStream({
-    start(controller) {
+    async start(ctrl) {
+      controller = ctrl;
       const encoder = new TextEncoder();
 
-      // 1. Send current status immediately
+      // === 1. Store controller for webhook broadcast ===
+      (global as any).__sseController = ctrl;
+
+      // === 2. Send current status if exists ===
       const status = getCurrentStatus();
       if (status) {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(status)}\n\n`));
+        ctrl.enqueue(encoder.encode(`data: ${JSON.stringify(status)}\n\n`));
+      } else {
+        // === 3. No status? Poll once for this client ===
+        ctrl.enqueue(encoder.encode(`data: ${JSON.stringify({ loading: true })}\n\n`));
+        try {
+          await pollInitialStatus(); // This updates status + broadcasts
+        } catch (err) {
+          console.error('Per-client poll failed:', err);
+          ctrl.enqueue(encoder.encode(`data: ${JSON.stringify({ error: 'Failed to load' })}\n\n`));
+        }
       }
 
-      // 2. Keep-alive ping every 15s
+      // === 4. Keep-alive ping ===
       const keepAlive = setInterval(() => {
-        controller.enqueue(encoder.encode(': ping\n\n'));
+        ctrl.enqueue(encoder.encode(': ping\n\n'));
       }, 15_000);
 
-      // 3. Store controller globally so webhook can push
-      (global as any).__sseController = controller;
-
-      // 4. Cleanup
+      // === 5. Cleanup ===
       return () => {
         clearInterval(keepAlive);
-        delete (global as any).__sseController;
+        if ((global as any).__sseController === ctrl) {
+          delete (global as any).__sseController;
+        }
       };
+    },
+    cancel() {
+      // Client closed tab
+      if ((global as any).__sseController === controller) {
+        delete (global as any).__sseController;
+      }
     },
   });
 
@@ -33,7 +53,8 @@ export async function GET() {
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
+      Connection: 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
     },
   });
 }
