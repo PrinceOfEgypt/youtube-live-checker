@@ -11,32 +11,36 @@ export interface LiveStatus {
   thumbnail?: string;
   startedAt?: string;
   viewerCount?: number;
+  channelName?: string;
+  channelLogo?: string;
 }
 
 export async function checkChannelLive(): Promise<LiveStatus> {
   try {
-    // Step 1: Get the channel's upload playlist ID
+    // Step 1: Get channel details (name + logo)
     const channelRes = await axios.get(
-      `https://www.googleapis.com/youtube/v3/channels`,
+      'https://www.googleapis.com/youtube/v3/channels',
       {
         params: {
-          part: 'contentDetails',
+          part: 'snippet,contentDetails',
           id: CHANNEL_ID,
           key: API_KEY,
         },
       }
     );
 
-    const uploadPlaylistId =
-      channelRes.data.items[0]?.contentDetails?.relatedPlaylists?.uploads;
-
-    if (!uploadPlaylistId) {
+    const channel = channelRes.data.items[0];
+    if (!channel) {
       return { isLive: false };
     }
 
-    // Step 2: Search for live videos in the uploads playlist
+    const channelName = channel.snippet.title;
+    const channelLogo = channel.snippet.thumbnails.default.url;
+    const uploadPlaylistId = channel.contentDetails?.relatedPlaylists?.uploads;
+
+    // Step 2: Search for live video
     const searchRes = await axios.get(
-      `https://www.googleapis.com/youtube/v3/search`,
+      'https://www.googleapis.com/youtube/v3/search',
       {
         params: {
           part: 'snippet',
@@ -50,15 +54,18 @@ export async function checkChannelLive(): Promise<LiveStatus> {
     );
 
     const liveItem = searchRes.data.items[0];
-
     if (!liveItem) {
-      return { isLive: false };
+      return {
+        isLive: false,
+        channelName,
+        channelLogo,
+      };
     }
 
-    // Step 3: Get live streaming details
+    // Step 3: Get live video details
     const videoId = liveItem.id.videoId;
     const videoRes = await axios.get(
-      `https://www.googleapis.com/youtube/v3/videos`,
+      'https://www.googleapis.com/youtube/v3/videos',
       {
         params: {
           part: 'snippet,liveStreamingDetails',
@@ -80,6 +87,8 @@ export async function checkChannelLive(): Promise<LiveStatus> {
       viewerCount: details.concurrentViewers
         ? parseInt(details.concurrentViewers)
         : undefined,
+      channelName,
+      channelLogo,
     };
   } catch (error: any) {
     console.error('YouTube API Error:', error.response?.data || error.message);
