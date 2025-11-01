@@ -151,6 +151,8 @@ async function ensureInitialStatus(env: Env) {
     };
 
     await env.LIVE_STATUS.put('current', JSON.stringify(status));
+    // At end of ensureInitialStatus()
+    await env.LIVE_STATUS.delete('pendingQueue'); // Optional: clear on startup
     log('Initial poll: LIVE → SAVED TO KV');
   } catch (e: any) {
     error('INITIAL POLL FAILED:', e.message);
@@ -161,6 +163,7 @@ async function ensureInitialStatus(env: Env) {
   }
 }
 
+// === Webhook Handler ===
 // === Webhook Handler ===
 async function handleWebhook(request: Request, env: Env): Promise<Response> {
   const text = await request.text();
@@ -175,64 +178,105 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
   const channelId = entry['yt:channelId'];
   if (channelId !== env.CHANNEL_ID) return new Response('Wrong channel', { status: 200 });
 
-  // === SAVE videoId for polling ===
-  await env.LIVE_STATUS.put('pendingVideoId', videoId);
-  log('Webhook → Scheduled/Pending video:', videoId);
+  // === ADD TO QUEUE (avoid duplicates) ===
+  const queueRaw = await env.LIVE_STATUS.get('pendingQueue') || '[]';
+  const queue: string[] = JSON.parse(queueRaw);
 
-  // === Trigger immediate status check ===
+  if (!queue.includes(videoId)) {
+    queue.push(videoId);
+    await env.LIVE_STATUS.put('pendingQueue', JSON.stringify(queue));
+    log('Webhook → Added to queue:', videoId, '| Queue size:', queue.length);
+  } else {
+    log('Webhook → Already in queue:', videoId);
+  }
+
+  // Trigger immediate check
   await checkLiveStatus(env);
 
   return new Response('OK', { status: 200 });
 }
 
-// === Check if pending video is actually live ===
+// === Check ALL pending videos ===
 async function checkLiveStatus(env: Env) {
-  const pendingId = await env.LIVE_STATUS.get('pendingVideoId');
-  if (!pendingId) return;
+  const queueRaw = await env.LIVE_STATUS.get('pendingQueue');
+  if (!queueRaw) return;
 
-  try {
-    const { name, logo } = await ensureChannelMetadata(env);
+  const queue: string[] = JSON.parse(queueRaw);
+  if (queue.length === 0) return;
 
-    const videoRes = await axios.get('https://www.googleapis.com/youtube/v3/videos', {
-      params: { part: 'snippet,liveStreamingDetails', id: pendingId, key: env.YOUTUBE_API_KEY },
-      timeout: 8000,
-    });
+  const { name, logo } = await ensureChannelMetadata(env);
+  const liveVideoIds: string[] = [];
+  const stillPending: string[] = [];
 
-    const video = videoRes.data.items?.[0];
-    if (!video) {
-      await env.LIVE_STATUS.delete('pendingVideoId');
-      log('Pending video not found → cleared');
-      return;
+  // Check each video in parallel
+  const checks = queue.map(async (videoId) => {
+    try {
+      const res = await axios.get('https://www.googleapis.com/youtube/v3/videos', {
+        params: { part: 'snippet,liveStreamingDetails', id: videoId, key: env.YOUTUBE_API_KEY },
+        timeout: 8000,
+      });
+
+      const video = res.data.items?.[0];
+      if (!video) return { videoId, status: 'deleted' };
+
+      const details = video.liveStreamingDetails;
+      const isLive = details.actualStartTime && !details.actualEndTime;
+      const isEnded = !!details.actualEndTime;
+
+      return { videoId, isLive, isEnded, video };
+    } catch {
+      return { videoId, status: 'error' };
     }
+  });
 
-    const details = video.liveStreamingDetails;
-    const isActuallyLive = details.actualStartTime && !details.actualEndTime;
+  const results = await Promise.all(checks);
 
-    const status: LiveStatus = {
-      isLive: isActuallyLive,
-      ...(isActuallyLive && {
-        title: video.snippet.title,
-        videoId: pendingId,
-        thumbnail: video.snippet.thumbnails.high.url,
-        startedAt: details.actualStartTime,
-        viewerCount: details.concurrentViewers ? Number(details.concurrentViewers) : undefined,
-      }),
+  // Find the **first live video**
+  let liveStatus: LiveStatus | null = null;
+  for (const result of results) {
+    if (result.isLive && result.video) {
+      liveStatus = {
+        isLive: true,
+        title: result.video.snippet.title,
+        videoId: result.videoId,
+        thumbnail: result.video.snippet.thumbnails.high.url,
+        startedAt: result.video.liveStreamingDetails.actualStartTime,
+        viewerCount: result.video.liveStreamingDetails.concurrentViewers
+          ? Number(result.video.liveStreamingDetails.concurrentViewers)
+          : undefined,
+        channelName: name,
+        channelLogo: logo,
+        updatedAt: Date.now(),
+      };
+      break; // Only show **one live stream**
+    }
+  }
+
+  // Update queue: keep only pending/ended
+  for (const result of results) {
+    if (result.status === 'deleted' || result.isEnded || result.status === 'error') {
+      // Remove from queue
+    } else if (!result.isLive) {
+      stillPending.push(result.videoId);
+    }
+  }
+
+  // Save new queue
+  await env.LIVE_STATUS.put('pendingQueue', JSON.stringify(stillPending));
+
+  // Save current status
+  if (liveStatus) {
+    await env.LIVE_STATUS.put('current', JSON.stringify(liveStatus));
+    log('LIVE →', liveStatus.title);
+  } else {
+    const offline: LiveStatus = {
+      isLive: false,
       channelName: name,
       channelLogo: logo,
       updatedAt: Date.now(),
-      pendingVideoId: isActuallyLive ? undefined : pendingId,  // Keep if not live
     };
-
-    await env.LIVE_STATUS.put('current', JSON.stringify(status));
-    log('Status updated →', isActuallyLive ? 'LIVE' : 'SCHEDULED (not started)');
-
-    // Clear pending if ended
-    if (details.actualEndTime) {
-      await env.LIVE_STATUS.delete('pendingVideoId');
-      log('Stream ended → cleared pending');
-    }
-  } catch (e: any) {
-    error('checkLiveStatus failed:', e.message);
+    await env.LIVE_STATUS.put('current', JSON.stringify(offline));
+    log('All streams OFFLINE or PENDING');
   }
 }
 
