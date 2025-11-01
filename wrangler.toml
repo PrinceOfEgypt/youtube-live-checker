@@ -15,6 +15,9 @@ CHANNEL_ID = "UCw3BCSojo1NKBw0xvfKa4ZQ"
 binding = "LIVE_STATUS"
 id = "ca428cb65eb14aed88bc91627e4e001d"
 
+[[triggers]]
+schedule = "*/1 * * * *"
+
 # === Development Mode (Full Debug Logs) ===
 [dev]
 port = 8787

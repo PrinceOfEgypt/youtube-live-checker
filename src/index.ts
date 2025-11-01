@@ -19,6 +19,7 @@ interface LiveStatus {
   channelName: string;
   channelLogo: string;
   updatedAt: number;
+  pendingVideoId?: string;  // ← NEW
 }
 
 // === DEBUG MODE ===
@@ -163,16 +164,9 @@ async function ensureInitialStatus(env: Env) {
 // === Webhook Handler ===
 async function handleWebhook(request: Request, env: Env): Promise<Response> {
   const text = await request.text();
-  const parser = new XMLParser({
-    ignoreAttributes: false,
-    attributeNamePrefix: '@_',
-  });
+  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
   let xml: any;
-  try {
-    xml = parser.parse(text);
-  } catch {
-    return new Response('Invalid XML', { status: 400 });
-  }
+  try { xml = parser.parse(text); } catch { return new Response('Invalid XML', { status: 400 }); }
 
   const entry = xml?.feed?.entry;
   if (!entry) return new Response('No entry', { status: 200 });
@@ -181,23 +175,44 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
   const channelId = entry['yt:channelId'];
   if (channelId !== env.CHANNEL_ID) return new Response('Wrong channel', { status: 200 });
 
+  // === SAVE videoId for polling ===
+  await env.LIVE_STATUS.put('pendingVideoId', videoId);
+  log('Webhook → Scheduled/Pending video:', videoId);
+
+  // === Trigger immediate status check ===
+  await checkLiveStatus(env);
+
+  return new Response('OK', { status: 200 });
+}
+
+// === Check if pending video is actually live ===
+async function checkLiveStatus(env: Env) {
+  const pendingId = await env.LIVE_STATUS.get('pendingVideoId');
+  if (!pendingId) return;
+
   try {
     const { name, logo } = await ensureChannelMetadata(env);
+
     const videoRes = await axios.get('https://www.googleapis.com/youtube/v3/videos', {
-      params: { part: 'snippet,liveStreamingDetails', id: videoId, key: env.YOUTUBE_API_KEY },
+      params: { part: 'snippet,liveStreamingDetails', id: pendingId, key: env.YOUTUBE_API_KEY },
+      timeout: 8000,
     });
 
-    const video = videoRes.data.items[0];
-    if (!video) throw new Error('Video not found');
+    const video = videoRes.data.items?.[0];
+    if (!video) {
+      await env.LIVE_STATUS.delete('pendingVideoId');
+      log('Pending video not found → cleared');
+      return;
+    }
 
     const details = video.liveStreamingDetails;
-    const isLive = !details.actualEndTime;
+    const isActuallyLive = details.actualStartTime && !details.actualEndTime;
 
     const status: LiveStatus = {
-      isLive,
-      ...(isLive && {
+      isLive: isActuallyLive,
+      ...(isActuallyLive && {
         title: video.snippet.title,
-        videoId,
+        videoId: pendingId,
         thumbnail: video.snippet.thumbnails.high.url,
         startedAt: details.actualStartTime,
         viewerCount: details.concurrentViewers ? Number(details.concurrentViewers) : undefined,
@@ -205,15 +220,20 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
       channelName: name,
       channelLogo: logo,
       updatedAt: Date.now(),
+      pendingVideoId: isActuallyLive ? undefined : pendingId,  // Keep if not live
     };
 
     await env.LIVE_STATUS.put('current', JSON.stringify(status));
-    log('Webhook →', isLive ? 'LIVE' : 'OFFLINE');
-  } catch (e) {
-    error('Webhook error:', e);
-  }
+    log('Status updated →', isActuallyLive ? 'LIVE' : 'SCHEDULED (not started)');
 
-  return new Response('OK', { status: 200 });
+    // Clear pending if ended
+    if (details.actualEndTime) {
+      await env.LIVE_STATUS.delete('pendingVideoId');
+      log('Stream ended → cleared pending');
+    }
+  } catch (e: any) {
+    error('checkLiveStatus failed:', e.message);
+  }
 }
 
 // === Webhook Verification ===
@@ -403,5 +423,10 @@ export default {
     }
 
     return new Response('Not found', { status: 404 });
+  },
+
+  async scheduled(event: ScheduledEvent, env: Env): Promise<void> {
+    log('Cron triggered: checking live status');
+    await checkLiveStatus(env);
   },
 };
