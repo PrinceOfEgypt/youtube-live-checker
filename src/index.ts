@@ -19,7 +19,11 @@ interface LiveStatus {
   channelName: string;
   channelLogo: string;
   updatedAt: number;
-  pendingVideoId?: string;  // ← NEW
+  nextStream?: {
+    title: string;
+    scheduledStartTime: string;  // ISO string
+    videoId: string;
+  };
 }
 
 // === DEBUG MODE ===
@@ -95,16 +99,14 @@ async function ensureChannelMetadata(env: Env): Promise<{ name: string; logo: st
   }
 }
 
-// === Initial Poll ===
-// === REPLACE ensureInitialStatus() WITH THIS ===
+// === Initial Status ===
 async function ensureInitialStatus(env: Env) {
   const current = await env.LIVE_STATUS.get('current');
-  if (current && current !== '' && current !== 'null') {
+  if (current && current !== '' && current !== 'null' && current !== 'undefined') {
     log('KV has current status');
     return;
   }
 
-  // Fallback: offline
   const { name, logo } = await ensureChannelMetadata(env);
   const status: LiveStatus = { isLive: false, channelName: name, channelLogo: logo, updatedAt: Date.now() };
   await env.LIVE_STATUS.put('current', JSON.stringify(status));
@@ -125,7 +127,6 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
   const channelId = entry['yt:channelId'];
   if (channelId !== env.CHANNEL_ID) return new Response('Wrong channel', { status: 200 });
 
-  // === ADD TO QUEUE (avoid duplicates) ===
   const queueRaw = await env.LIVE_STATUS.get('pendingQueue') || '[]';
   const queue: string[] = JSON.parse(queueRaw);
 
@@ -137,13 +138,11 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
     log('Webhook → Already in queue:', videoId);
   }
 
-  // Trigger immediate check
   await checkLiveStatus(env);
-
   return new Response('OK', { status: 200 });
 }
 
-// === Check ALL pending videos ===
+// === CHECK LIVE STATUS ===
 async function checkLiveStatus(env: Env) {
   const queueRaw = await env.LIVE_STATUS.get('pendingQueue');
   if (!queueRaw) return;
@@ -156,6 +155,9 @@ async function checkLiveStatus(env: Env) {
   const batchSize = 50;
   let liveStatus: LiveStatus | null = null;
   const stillPending: string[] = [];
+
+  let nextStream: { title: string; scheduledStartTime: string; videoId: string } | null = null;
+  let earliestTime: string | null = null;
 
   for (let i = 0; i < queue.length; i += batchSize) {
     const batch = queue.slice(i, i + batchSize);
@@ -172,7 +174,6 @@ async function checkLiveStatus(env: Env) {
         const isLive = !!details.actualStartTime && !details.actualEndTime;
         const isEnded = !!details.actualEndTime;
 
-        // === UPDATE LIVE STATUS (even if already live) ===
         if (isLive) {
           liveStatus = {
             isLive: true,
@@ -185,35 +186,46 @@ async function checkLiveStatus(env: Env) {
             channelLogo: logo,
             updatedAt: Date.now(),
           };
+          stillPending.push(video.id);
           log('LIVE UPDATE →', video.snippet.title, '| Viewers:', liveStatus.viewerCount);
-
-          // KEEP IN QUEUE FOR NEXT CHECK
-          stillPending.push(video.id);
         }
 
-        // === KEEP SCHEDULED (not started) ===
-        else if (!isLive && !isEnded) {
+        else if (!isLive && !isEnded && details.scheduledStartTime) {
           stillPending.push(video.id);
+          const startTime = details.scheduledStartTime;
+          if (!earliestTime || startTime < earliestTime) {
+            earliestTime = startTime;
+            nextStream = {
+              title: video.snippet.title,
+              scheduledStartTime: startTime,
+              videoId: video.id,
+            };
+          }
         }
-        // Else: ENDED → REMOVED FROM QUEUE
       }
     } catch (e: any) {
-      error('Batch API failed:', e.message);
-      stillPending.push(...batch); // Keep on error
+      error('Batch failed:', e.message);
+      stillPending.push(...batch);
     }
   }
 
-  // === SAVE CURRENT STATUS ===
   if (liveStatus) {
     await env.LIVE_STATUS.put('current', JSON.stringify(liveStatus));
+    log('Status → LIVE:', liveStatus.title);
   } else {
-    const offline: LiveStatus = { isLive: false, channelName: name, channelLogo: logo, updatedAt: Date.now() };
+    const offline: LiveStatus = {
+      isLive: false,
+      channelName: name,
+      channelLogo: logo,
+      updatedAt: Date.now(),
+      nextStream: nextStream || undefined,
+    };
     await env.LIVE_STATUS.put('current', JSON.stringify(offline));
+    log('Status → OFFLINE', nextStream ? '| Next: ' + nextStream.title : '');
   }
 
-  // === SAVE QUEUE (only scheduled + live) ===
   await env.LIVE_STATUS.put('pendingQueue', JSON.stringify(stillPending));
-  log('Queue:', stillPending.length, 'videos (live + scheduled)');
+  log('Queue cleaned →', stillPending.length, 'videos (live + scheduled)');
 }
 
 // === Webhook Verification ===
@@ -221,9 +233,6 @@ async function handleVerification(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const mode = url.searchParams.get('hub.mode');
   const challenge = url.searchParams.get('hub.challenge');
-  const topic = url.searchParams.get('hub.topic');
-
-  log('Webhook verification:', { mode, topic });
 
   if (mode === 'subscribe' && challenge) {
     log('Webhook SUBSCRIBED! Challenge:', challenge);
@@ -244,11 +253,8 @@ async function handleStatus(request: Request, env: Env): Promise<Response> {
   
   const url = new URL(request.url);
   const testMode = url.searchParams.get('test');
-
-  // === FETCH REAL CHANNEL METADATA ===
   const { name, logo } = await ensureChannelMetadata(env);
 
-  // === TEST MODE: Use REAL channel + fake live data ===
   if (testMode === 'live') {
     const testData: LiveStatus = {
       isLive: true,
@@ -257,8 +263,8 @@ async function handleStatus(request: Request, env: Env): Promise<Response> {
       thumbnail: "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
       startedAt: new Date().toISOString(),
       viewerCount: 1234,
-      channelName: name,  // ← REAL NAME
-      channelLogo: logo,  // ← REAL LOGO
+      channelName: name,
+      channelLogo: logo,
       updatedAt: Date.now(),
     };
     return Response.json(testData);
@@ -267,14 +273,13 @@ async function handleStatus(request: Request, env: Env): Promise<Response> {
   if (testMode === 'offline') {
     const testData: LiveStatus = {
       isLive: false,
-      channelName: name,  // ← REAL NAME
-      channelLogo: logo,  // ← REAL LOGO
+      channelName: name,
+      channelLogo: logo,
       updatedAt: Date.now(),
     };
     return Response.json(testData);
   }
 
-  // === NORMAL MODE ===
   const json = await env.LIVE_STATUS.get('current');
   if (!json || json === '' || json === 'null') {
     return Response.json({ isLive: false, channelName: name, channelLogo: logo });
@@ -282,7 +287,7 @@ async function handleStatus(request: Request, env: Env): Promise<Response> {
   return Response.json(JSON.parse(json));
 }
 
-// === HTML Widget ===
+// === FULL HTML WIDGET (fixed next-stream) ===
 const HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -298,7 +303,7 @@ const HTML = `<!DOCTYPE html>
   <div id="widget" class="w-full max-w-md bg-white rounded-xl shadow-lg overflow-hidden font-sans">
     <div class="text-center py-8">
       <div class="inline-block w-6 h-6 border-4 border-gray-300 border-t-blue-600 rounded-full animate-spin"></div>
-      <p class="mt-2 text-sm text-gray-600">Loading...</p>
+      <p class="mt-2 text-sm text-gray-600">Loading…</p>
     </div>
   </div>
 
@@ -312,23 +317,42 @@ const HTML = `<!DOCTYPE html>
   <script>
     async function updateStatus() {
       try {
-        // Pass full URL with querystring
         const res = await fetch('/api/status' + location.search);
         const data = await res.json();
+        console.log('API payload →', data);               // DEBUG
         const widget = document.getElementById('widget');
 
         const logoBlock = \`
-          <img src="\${data.channelLogo}" alt="\${data.channelName}" class="w-12 h-12 rounded-full border-2 border-white shadow-md flex-shrink-0" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-          <div class="hidden w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full items-center justify-center text-white font-bold text-lg shadow-md">\${data.channelName.charAt(0)}</div>
+          <img src="\${data.channelLogo}" alt="\${data.channelName}"
+               class="w-12 h-12 rounded-full border-2 border-white shadow-md flex-shrink-0"
+               onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+          <div class="hidden w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full items-center justify-center text-white font-bold text-lg shadow-md">
+            \${data.channelName.charAt(0)}
+          </div>
         \`;
 
+        // ----- OFFLINE -------------------------------------------------
         if (!data.isLive) {
+          const next = data.nextStream;
+          const nextHTML = next
+            ? \`<p class="text-xs font-semibold text-gray-600 mt-1">
+                 Next: <span class="text-xs font-normal text-gray-600 mt-1">\${next.title}</span><br>
+                 \${new Date(next.scheduledStartTime).toLocaleString([], {
+                   weekday: 'short',
+                   month: 'short',
+                   day: 'numeric',
+                   hour: 'numeric',
+                   minute: '2-digit'
+                 })}
+               </p>\`
+            : '<p class="text-xs text-gray-500">Currently Offline</p>';
+
           widget.innerHTML = \`
             <div class="flex items-center p-4 bg-gradient-to-r from-gray-50 to-gray-100">
               \${logoBlock}
               <div class="ml-3 flex-1 min-w-0">
                 <h2 class="font-bold text-gray-900 truncate">\${data.channelName}</h2>
-                <p class="text-xs text-gray-500">Currently Offline</p>
+                \${nextHTML}
               </div>
               <div class="ml-auto flex items-center gap-1 text-gray-500">
                 <div class="w-2 h-2 bg-gray-400 rounded-full"></div>
@@ -339,11 +363,13 @@ const HTML = `<!DOCTYPE html>
           return;
         }
 
-        const watchButton = data.videoId ? \`
-          <a href="https://youtube.com/watch?v=\${data.videoId}" target="_blank" class="ml-auto px-3 py-1.5 bg-red-600 text-white text-xs font-medium rounded-full hover:bg-red-700 transition">
-            Watch Live
-          </a>
-        \` : '';
+        // ----- LIVE ---------------------------------------------------
+        const watchBtn = data.videoId
+          ? \`<a href="https://youtube.com/watch?v=\${data.videoId}" target="_blank"
+                 class="ml-auto px-3 py-1.5 bg-red-600 text-white text-xs font-medium rounded-full hover:bg-red-700 transition">
+                 Watch Live
+               </a>\`
+          : '';
 
         widget.innerHTML = \`
           <div class="flex items-center p-4 bg-gradient-to-r from-red-50 to-pink-50">
@@ -356,10 +382,10 @@ const HTML = `<!DOCTYPE html>
               <h3 class="font-semibold text-sm line-clamp-1">\${data.title || 'Live Stream'}</h3>
               <div class="flex items-center gap-3 text-xs text-gray-600 mt-1">
                 \${data.viewerCount ? \`<span>\${data.viewerCount.toLocaleString()} watching</span>\` : ''}
-                \${data.startedAt ? \`<span>Started \${new Date(data.startedAt).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</span>\` : ''}
+                \${data.startedAt ? \`<span>Started \${new Date(data.startedAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>\` : ''}
               </div>
             </div>
-            \${watchButton}
+            \${watchBtn}
           </div>
         \`;
       } catch (e) {
@@ -380,9 +406,7 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    // Pass request to global for test mode
     (globalThis as any).REQUEST = request;
-
     await ensureInitialStatus(env);
 
     if (path === '/' || path === '') {
@@ -392,12 +416,12 @@ export default {
 
     if (path === '/api/webhook') {
       if (request.method === 'POST') return handleWebhook(request, env);
-      if (request.method === 'GET') return handleVerification(request);
+      if (request.method === 'GET') return handleVerification(rate);
       return new Response('Method not allowed', { status: 405 });
     }
 
     if (path === '/api/status' && request.method === 'GET') {
-      return handleStatus(request, env);  // ← PASS REQUEST
+      return handleStatus(request, env);
     }
 
     return new Response('Not found', { status: 404 });
