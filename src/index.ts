@@ -239,8 +239,6 @@ async function handleVerification(request: Request): Promise<Response> {
 }
 
 // === /api/status ===
-// === /api/status ===
-// === /api/status ===
 async function handleStatus(request: Request, env: Env): Promise<Response> {
   await testAPIKey(env);
   
