@@ -239,11 +239,46 @@ async function handleVerification(request: Request): Promise<Response> {
 }
 
 // === /api/status ===
-async function handleStatus(env: Env): Promise<Response> {
+// === /api/status ===
+// === /api/status ===
+async function handleStatus(request: Request, env: Env): Promise<Response> {
   await testAPIKey(env);
+  
+  const url = new URL(request.url);
+  const testMode = url.searchParams.get('test');
+
+  // === FETCH REAL CHANNEL METADATA ===
+  const { name, logo } = await ensureChannelMetadata(env);
+
+  // === TEST MODE: Use REAL channel + fake live data ===
+  if (testMode === 'live') {
+    const testData: LiveStatus = {
+      isLive: true,
+      title: "TEST: Sunday Divine Liturgy",
+      videoId: "dQw4w9WgXcQ",
+      thumbnail: "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
+      startedAt: new Date().toISOString(),
+      viewerCount: 1234,
+      channelName: name,  // ← REAL NAME
+      channelLogo: logo,  // ← REAL LOGO
+      updatedAt: Date.now(),
+    };
+    return Response.json(testData);
+  }
+
+  if (testMode === 'offline') {
+    const testData: LiveStatus = {
+      isLive: false,
+      channelName: name,  // ← REAL NAME
+      channelLogo: logo,  // ← REAL LOGO
+      updatedAt: Date.now(),
+    };
+    return Response.json(testData);
+  }
+
+  // === NORMAL MODE ===
   const json = await env.LIVE_STATUS.get('current');
   if (!json || json === '' || json === 'null') {
-    const { name, logo } = await ensureChannelMetadata(env);
     return Response.json({ isLive: false, channelName: name, channelLogo: logo });
   }
   return Response.json(JSON.parse(json));
@@ -258,64 +293,79 @@ const HTML = `<!DOCTYPE html>
   <title>YouTube Live Status</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    .line-clamp-2 { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .line-clamp-1 { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
   </style>
 </head>
 <body class="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center p-4">
-  <div id="widget" class="w-full max-w-md bg-white rounded-xl shadow-xl overflow-hidden font-sans">
-    <div class="text-center py-12">
-      <div class="inline-block w-8 h-8 border-4 border-gray-300 border-t-blue-600 rounded-full animate-spin"></div>
-      <p class="mt-4 text-gray-600">Loading live status...</p>
+  <div id="widget" class="w-full max-w-md bg-white rounded-xl shadow-lg overflow-hidden font-sans">
+    <div class="text-center py-8">
+      <div class="inline-block w-6 h-6 border-4 border-gray-300 border-t-blue-600 rounded-full animate-spin"></div>
+      <p class="mt-2 text-sm text-gray-600">Loading...</p>
     </div>
   </div>
+
+  <!-- TEST BUTTONS -->
+  <!--<div class="fixed bottom-4 right-4 flex gap-2 text-xs">
+    <a href="?test=live" class="px-2 py-1 bg-red-600 text-white rounded">TEST LIVE</a>
+    <a href="?test=offline" class="px-2 py-1 bg-gray-600 text-white rounded">TEST OFF</a>
+    <a href="/" class="px-2 py-1 bg-blue-600 text-white rounded">REAL</a>
+  </div>-->
 
   <script>
     async function updateStatus() {
       try {
-        const res = await fetch('/api/status');
+        // Pass full URL with querystring
+        const res = await fetch('/api/status' + location.search);
         const data = await res.json();
         const widget = document.getElementById('widget');
 
+        const logoBlock = \`
+          <img src="\${data.channelLogo}" alt="\${data.channelName}" class="w-12 h-12 rounded-full border-2 border-white shadow-md flex-shrink-0" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+          <div class="hidden w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full items-center justify-center text-white font-bold text-lg shadow-md">\${data.channelName.charAt(0)}</div>
+        \`;
+
         if (!data.isLive) {
           widget.innerHTML = \`
-            <a href="https://youtube.com/channel/UCw3BCSojo1NKBw0xvfKa4ZQ" target="_blank" class="flex flex-col items-center gap-3 p-6 bg-gradient-to-b from-gray-50 to-gray-100 hover:from-gray-100 hover:to-gray-200 transition rounded-t-xl">
-              <img src="\${data.channelLogo}" alt="\${data.channelName}" class="w-18 h-18 rounded-full border-4 border-white shadow-lg" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-              <div class="hidden w-18 h-18 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full items-center justify-center text-white font-bold text-2xl shadow-lg">\${data.channelName.charAt(0)}</div>
-              <h2 class="text-xl font-bold text-gray-800">\${data.channelName}</h2>
-            </a>
-            <div class="p-6 text-center">
-              <div class="py-10">
-                <div class="flex items-center justify-center gap-2 text-gray-600 mb-2">
-                  <div class="w-3 h-3 bg-gray-400 rounded-full"></div>
-                  <span class="font-semibold">Not Live</span>
-                </div>
-                <p class="text-sm text-gray-500">\${data.channelName} is currently offline.</p>
+            <div class="flex items-center p-4 bg-gradient-to-r from-gray-50 to-gray-100">
+              \${logoBlock}
+              <div class="ml-3 flex-1 min-w-0">
+                <h2 class="font-bold text-gray-900 truncate">\${data.channelName}</h2>
+                <p class="text-xs text-gray-500">Currently Offline</p>
+              </div>
+              <div class="ml-auto flex items-center gap-1 text-gray-500">
+                <div class="w-2 h-2 bg-gray-400 rounded-full"></div>
+                <span class="text-xs font-medium">OFFLINE</span>
               </div>
             </div>
           \`;
           return;
         }
 
-        widget.innerHTML = \`
-          <a href="https://youtube.com/channel/UCw3BCSojo1NKBw0xvfKa4ZQ" target="_blank" class="flex flex-col items-center gap-3 p-6 bg-gradient-to-b from-gray-50 to-gray-100 hover:from-gray-100 hover:to-gray-200 transition rounded-t-xl">
-            <img src="\${data.channelLogo}" alt="\${data.channelName}" class="w-18 h-18 rounded-full border-4 border-white shadow-lg" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-            <div class="hidden w-18 h-18 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full items-center justify-center text-white font-bold text-2xl shadow-lg">\${data.channelName.charAt(0)}</div>
-            <h2 class="text-xl font-bold text-gray-800">\${data.channelName}</h2>
+        const watchButton = data.videoId ? \`
+          <a href="https://youtube.com/watch?v=\${data.videoId}" target="_blank" class="ml-auto px-3 py-1.5 bg-red-600 text-white text-xs font-medium rounded-full hover:bg-red-700 transition">
+            Watch Live
           </a>
-          <div class="p-6 text-center">
-            <div class="flex items-center justify-center gap-2 text-red-600 mb-4">
-              <div class="w-3 h-3 bg-red-600 rounded-full animate-pulse"></div>
-              <span class="font-bold text-lg">LIVE NOW</span>
+        \` : '';
+
+        widget.innerHTML = \`
+          <div class="flex items-center p-4 bg-gradient-to-r from-red-50 to-pink-50">
+            \${logoBlock}
+            <div class="ml-3 flex-1 min-w-0">
+              <div class="flex items-center gap-1 text-red-600 mb-1">
+                <div class="w-2 h-2 bg-red-600 rounded-full animate-pulse"></div>
+                <span class="text-xs font-bold">LIVE</span>
+              </div>
+              <h3 class="font-semibold text-sm line-clamp-1">\${data.title || 'Live Stream'}</h3>
+              <div class="flex items-center gap-3 text-xs text-gray-600 mt-1">
+                \${data.viewerCount ? \`<span>\${data.viewerCount.toLocaleString()} watching</span>\` : ''}
+                \${data.startedAt ? \`<span>Started \${new Date(data.startedAt).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</span>\` : ''}
+              </div>
             </div>
-            \${data.thumbnail ? \`<a href="https://youtube.com/watch?v=\${data.videoId}" target="_blank" class="block mb-5 rounded-lg overflow-hidden shadow-md hover:opacity-90 transition"><img src="\${data.thumbnail}" alt="\${data.title || 'Live'}" class="w-full object-cover"></a>\` : ''}
-            <h3 class="font-semibold text-lg mb-2 line-clamp-2">\${data.title || 'Untitled Stream'}</h3>
-            \${data.viewerCount ? \`<p class="text-sm text-gray-600 mb-1">\${data.viewerCount.toLocaleString()} watching</p>\` : ''}
-            \${data.startedAt ? \`<p class="text-xs text-gray-500 mb-5">Started at \${new Date(data.startedAt).toLocaleTimeString()}</p>\` : ''}
-            <a href="https://youtube.com/watch?v=\${data.videoId}" target="_blank" class="inline-block w-full max-w-xs px-6 py-3 bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition">Watch Live</a>
+            \${watchButton}
           </div>
         \`;
       } catch (e) {
-        console.error('Client update error:', e);
+        console.error('Update error:', e);
       }
     }
 
@@ -332,6 +382,9 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
 
+    // Pass request to global for test mode
+    (globalThis as any).REQUEST = request;
+
     await ensureInitialStatus(env);
 
     if (path === '/' || path === '') {
@@ -345,7 +398,9 @@ export default {
       return new Response('Method not allowed', { status: 405 });
     }
 
-    if (path === '/api/status' && request.method === 'GET') return handleStatus(env);
+    if (path === '/api/status' && request.method === 'GET') {
+      return handleStatus(request, env);  // ← PASS REQUEST
+    }
 
     return new Response('Not found', { status: 404 });
   },
