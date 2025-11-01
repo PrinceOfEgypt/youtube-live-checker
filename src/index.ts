@@ -96,74 +96,21 @@ async function ensureChannelMetadata(env: Env): Promise<{ name: string; logo: st
 }
 
 // === Initial Poll ===
+// === REPLACE ensureInitialStatus() WITH THIS ===
 async function ensureInitialStatus(env: Env) {
   const current = await env.LIVE_STATUS.get('current');
-  if (current && current !== '' && current !== 'null' && current !== 'undefined') {
-    log('KV already has current status');
+  if (current && current !== '' && current !== 'null') {
+    log('KV has current status');
     return;
   }
 
-  log('KV EMPTY or corrupted → Running initial poll...');
-
-  try {
-    const { name, logo } = await ensureChannelMetadata(env);
-    log('Fetched channel:', name);
-
-    const searchRes = await axios.get('https://www.googleapis.com/youtube/v3/search', {
-      params: {
-        part: 'snippet',
-        channelId: env.CHANNEL_ID,
-        eventType: 'live',
-        type: 'video',
-        maxResults: 1,
-        key: env.YOUTUBE_API_KEY,
-      },
-      timeout: 8000,
-    });
-
-    const liveItem = searchRes.data.items?.[0];
-    if (!liveItem) {
-      const status: LiveStatus = { isLive: false, channelName: name, channelLogo: logo, updatedAt: Date.now() };
-      await env.LIVE_STATUS.put('current', JSON.stringify(status));
-      log('Initial poll: OFFLINE → SAVED TO KV');
-      return;
-    }
-
-    const videoId = liveItem.id.videoId;
-    const videoRes = await axios.get('https://www.googleapis.com/youtube/v3/videos', {
-      params: { part: 'snippet,liveStreamingDetails', id: videoId, key: env.YOUTUBE_API_KEY },
-      timeout: 8000,
-    });
-
-    const video = videoRes.data.items[0];
-    const details = video.liveStreamingDetails;
-
-    const status: LiveStatus = {
-      isLive: true,
-      title: video.snippet.title,
-      videoId,
-      thumbnail: video.snippet.thumbnails.high.url,
-      startedAt: details.actualStartTime,
-      viewerCount: details.concurrentViewers ? Number(details.concurrentViewers) : undefined,
-      channelName: name,
-      channelLogo: logo,
-      updatedAt: Date.now(),
-    };
-
-    await env.LIVE_STATUS.put('current', JSON.stringify(status));
-    // At end of ensureInitialStatus()
-    await env.LIVE_STATUS.delete('pendingQueue'); // Optional: clear on startup
-    log('Initial poll: LIVE → SAVED TO KV');
-  } catch (e: any) {
-    error('INITIAL POLL FAILED:', e.message);
-    const { name, logo } = await ensureChannelMetadata(env);
-    const status: LiveStatus = { isLive: false, channelName: name, channelLogo: logo, updatedAt: Date.now() };
-    await env.LIVE_STATUS.put('current', JSON.stringify(status));
-    log('FALLBACK STATUS SAVED TO KV');
-  }
+  // Fallback: offline
+  const { name, logo } = await ensureChannelMetadata(env);
+  const status: LiveStatus = { isLive: false, channelName: name, channelLogo: logo, updatedAt: Date.now() };
+  await env.LIVE_STATUS.put('current', JSON.stringify(status));
+  log('Initial status: OFFLINE');
 }
 
-// === Webhook Handler ===
 // === Webhook Handler ===
 async function handleWebhook(request: Request, env: Env): Promise<Response> {
   const text = await request.text();
@@ -205,79 +152,68 @@ async function checkLiveStatus(env: Env) {
   if (queue.length === 0) return;
 
   const { name, logo } = await ensureChannelMetadata(env);
-  const liveVideoIds: string[] = [];
+
+  const batchSize = 50;
+  let liveStatus: LiveStatus | null = null;
   const stillPending: string[] = [];
 
-  // Check each video in parallel
-  const checks = queue.map(async (videoId) => {
+  for (let i = 0; i < queue.length; i += batchSize) {
+    const batch = queue.slice(i, i + batchSize);
+    const videoIds = batch.join(',');
+
     try {
       const res = await axios.get('https://www.googleapis.com/youtube/v3/videos', {
-        params: { part: 'snippet,liveStreamingDetails', id: videoId, key: env.YOUTUBE_API_KEY },
-        timeout: 8000,
+        params: { part: 'snippet,liveStreamingDetails', id: videoIds, key: env.YOUTUBE_API_KEY },
+        timeout: 10000,
       });
 
-      const video = res.data.items?.[0];
-      if (!video) return { videoId, status: 'deleted' };
+      for (const video of res.data.items || []) {
+        const details = video.liveStreamingDetails || {};
+        const isLive = !!details.actualStartTime && !details.actualEndTime;
+        const isEnded = !!details.actualEndTime;
 
-      const details = video.liveStreamingDetails;
-      const isLive = details.actualStartTime && !details.actualEndTime;
-      const isEnded = !!details.actualEndTime;
+        // === UPDATE LIVE STATUS (even if already live) ===
+        if (isLive) {
+          liveStatus = {
+            isLive: true,
+            title: video.snippet.title,
+            videoId: video.id,
+            thumbnail: video.snippet.thumbnails.high?.url || video.snippet.thumbnails.default?.url,
+            startedAt: details.actualStartTime,
+            viewerCount: details.concurrentViewers ? Number(details.concurrentViewers) : undefined,
+            channelName: name,
+            channelLogo: logo,
+            updatedAt: Date.now(),
+          };
+          log('LIVE UPDATE →', video.snippet.title, '| Viewers:', liveStatus.viewerCount);
 
-      return { videoId, isLive, isEnded, video };
-    } catch {
-      return { videoId, status: 'error' };
-    }
-  });
+          // KEEP IN QUEUE FOR NEXT CHECK
+          stillPending.push(video.id);
+        }
 
-  const results = await Promise.all(checks);
-
-  // Find the **first live video**
-  let liveStatus: LiveStatus | null = null;
-  for (const result of results) {
-    if (result.isLive && result.video) {
-      liveStatus = {
-        isLive: true,
-        title: result.video.snippet.title,
-        videoId: result.videoId,
-        thumbnail: result.video.snippet.thumbnails.high.url,
-        startedAt: result.video.liveStreamingDetails.actualStartTime,
-        viewerCount: result.video.liveStreamingDetails.concurrentViewers
-          ? Number(result.video.liveStreamingDetails.concurrentViewers)
-          : undefined,
-        channelName: name,
-        channelLogo: logo,
-        updatedAt: Date.now(),
-      };
-      break; // Only show **one live stream**
-    }
-  }
-
-  // Update queue: keep only pending/ended
-  for (const result of results) {
-    if (result.status === 'deleted' || result.isEnded || result.status === 'error') {
-      // Remove from queue
-    } else if (!result.isLive) {
-      stillPending.push(result.videoId);
+        // === KEEP SCHEDULED (not started) ===
+        else if (!isLive && !isEnded) {
+          stillPending.push(video.id);
+        }
+        // Else: ENDED → REMOVED FROM QUEUE
+      }
+    } catch (e: any) {
+      error('Batch API failed:', e.message);
+      stillPending.push(...batch); // Keep on error
     }
   }
 
-  // Save new queue
-  await env.LIVE_STATUS.put('pendingQueue', JSON.stringify(stillPending));
-
-  // Save current status
+  // === SAVE CURRENT STATUS ===
   if (liveStatus) {
     await env.LIVE_STATUS.put('current', JSON.stringify(liveStatus));
-    log('LIVE →', liveStatus.title);
   } else {
-    const offline: LiveStatus = {
-      isLive: false,
-      channelName: name,
-      channelLogo: logo,
-      updatedAt: Date.now(),
-    };
+    const offline: LiveStatus = { isLive: false, channelName: name, channelLogo: logo, updatedAt: Date.now() };
     await env.LIVE_STATUS.put('current', JSON.stringify(offline));
-    log('All streams OFFLINE or PENDING');
   }
+
+  // === SAVE QUEUE (only scheduled + live) ===
+  await env.LIVE_STATUS.put('pendingQueue', JSON.stringify(stillPending));
+  log('Queue:', stillPending.length, 'videos (live + scheduled)');
 }
 
 // === Webhook Verification ===
